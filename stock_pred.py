@@ -5,6 +5,7 @@ import datetime as dt
 import pandas_datareader as web
 import pandas as pd
 import numpy as np
+from streamlit.caching import cache
 import yfinance as yf
 import os.path
 import plotly.express as px
@@ -67,11 +68,11 @@ def load_data_predics(ticket, interval, startDate, endDate):
 
 @st.cache(allow_output_mutation=True)
 def load_data_pre_predics(ticket, interval, startDate, endDate):
-    startDate = dt.datetime.fromtimestamp(time.mktime(
+    startDateNew = dt.datetime.fromtimestamp(time.mktime(
         startDate.timetuple()) - (int(convert_timeData.get(interval) * 1000)))
     data = yf.download(
         tickers=str(ticket),
-        start=startDate,
+        start=startDateNew,
         end=endDate,
         interval=str(interval),
         group_by='ticker',
@@ -121,7 +122,7 @@ def prepare_result_data_train(train_data, prediction=80):
 
     # convert data to numpy array
     data = np.array(data)
-
+    data = np.reshape(data, (data.shape[0], 1))
     return data
 
 # build & train model LSTM
@@ -131,10 +132,6 @@ def prepare_model_lstm(data_train, result_train, loop=100):
     result_model = Sequential()
     result_model.add(LSTM(50, return_sequences=True,
                           input_shape=(data_train.shape[1], 1)))
-    result_model.add(Dropout(0.2))
-    result_model.add(LSTM(50, return_sequences=True))
-    result_model.add(Dropout(0.2))
-    result_model.add(LSTM(50, return_sequences=True))
     result_model.add(Dropout(0.2))
     result_model.add(LSTM(50, return_sequences=False))
     result_model.add(Dropout(0.2))
@@ -152,6 +149,26 @@ def prepare_model_lstm(data_train, result_train, loop=100):
 
     return result_model
 
+
+def prepare_model_rnn(data_train, result_train, loop=100):
+    result_model = Sequential()
+    result_model.add(SimpleRNN(50, input_shape=(data_train.shape[1], 1)))
+    result_model.add(Dropout(0.2))
+    result_model.add(Dense(1))
+    # compile model
+    result_model.compile(
+        optimizer='adam', loss='mean_squared_error', metrics=['acc'])
+    if path.exists('rnn_model_Close.h5'):
+        result_model.load_weights('rnn_model_Close.h5')
+    else:
+        st.write(result_train.shape)
+        st.write(data_train.shape)
+        result_model.fit(data_train, result_train,
+                         batch_size=64, epochs=loop)
+
+        result_model.save('rnn_model_Close.h5')
+
+    return result_model
 # create test data
 
 
@@ -209,8 +226,9 @@ def draw_chart(valid, selected_type):
     st.plotly_chart(fig)
 
 
-def train_init_model(ticket, selected_type, scale):
-    train_data = yf.download(
+@st.cache(allow_output_mutation=True)
+def download_data_init(ticket):
+    data = yf.download(
         tickers=str(ticket),
         period='max',
         interval='1d',
@@ -218,17 +236,26 @@ def train_init_model(ticket, selected_type, scale):
         auto_adjust=True,
         prepost=True,
         threads=True,
-        proxy=None
+        proxy=None,
     )
+    return data
+
+
+def train_init_model(ticket, algorithm, selected_type, scale):
+    train_data = download_data_init(ticket)
     calc_price_rate(train_data)
     train_data = train_data.filter(['Close']).values
-
     train_data_scaled = scale.fit_transform(train_data)
 
     data_train_model = prepare_data_train(train_data_scaled)
     result_train_model = prepare_result_data_train(train_data_scaled)
-    model = prepare_model_lstm(
-        data_train_model, result_train_model, convert_type_prediction.get(selected_type))
+    model = Sequential()
+    if algorithm == 'LSTM':
+        model = prepare_model_lstm(
+            data_train_model, result_train_model)
+    else:
+        model = prepare_model_rnn(
+            data_train_model, result_train_model)
     return model
 
 
